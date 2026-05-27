@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>発注管理アプリ</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f8fafc; font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    const INITIAL_MENUS = [
+      { id: 1, name: "豚骨ラーメン", dailyForecast: 30, leadTimeDays: 2, orderCycleDays: 7 },
+      { id: 2, name: "醤油ラーメン", dailyForecast: 20, leadTimeDays: 2, orderCycleDays: 7 },
+      { id: 3, name: "味噌ラーメン", dailyForecast: 15, leadTimeDays: 2, orderCycleDays: 7 },
+    ];
+
+    const INITIAL_INGREDIENTS = [
+      { id: 1, name: "チャーシュー", unit: "枚", currentStock: 200, leadTimeDays: 2, orderCycleDays: 7 },
+      { id: 2, name: "メンマ",       unit: "g",  currentStock: 1500, leadTimeDays: 3, orderCycleDays: 7 },
+      { id: 3, name: "海苔",         unit: "枚", currentStock: 300,  leadTimeDays: 5, orderCycleDays: 14 },
+      { id: 4, name: "ネギ",         unit: "g",  currentStock: 2000, leadTimeDays: 1, orderCycleDays: 3 },
+      { id: 5, name: "豚骨スープ",   unit: "L",  currentStock: 50,   leadTimeDays: 2, orderCycleDays: 7 },
+    ];
+
+    const INITIAL_RECIPES = {
+      1: [
+        { ingredientId: 1, amount: 2 },
+        { ingredientId: 2, amount: 30 },
+        { ingredientId: 3, amount: 1 },
+        { ingredientId: 4, amount: 20 },
+        { ingredientId: 5, amount: 0.5 },
+      ],
+      2: [
+        { ingredientId: 1, amount: 3 },
+        { ingredientId: 2, amount: 20 },
+        { ingredientId: 3, amount: 2 },
+        { ingredientId: 4, amount: 15 },
+      ],
+      3: [
+        { ingredientId: 2, amount: 25 },
+        { ingredientId: 3, amount: 1 },
+        { ingredientId: 4, amount: 20 },
+      ],
+    };
+
+    const MONTHS = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+
+    function calcOrderQty(dailyRequired, leadTimeDays, orderCycleDays, currentStock) {
+      const needed = dailyRequired * (leadTimeDays + orderCycleDays);
+      return Math.max(0, Math.ceil(needed - currentStock));
+    }
+
+    function StatusBadge({ orderQty, currentStock, optimalStock }) {
+      const b = (bg, color, label) => (
+        <span style={{ background:bg, color, padding:"2px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>{label}</span>
+      );
+      if (optimalStock > 0 && currentStock >= optimalStock) return b("#d1fae5","#065f46","適正");
+      if (orderQty > 0 && optimalStock > 0 && currentStock < optimalStock * 0.4) return b("#fee2e2","#991b1b","要発注");
+      if (orderQty > 0) return b("#fef3c7","#92400e","発注推奨");
+      return b("#f3f4f6","#6b7280","在庫十分");
+    }
+
+    // ===== AI予測モーダル =====
+    function AIForecastModal({ name, onApply, onClose }) {
+      const [loading, setLoading] = useState(false);
+      const [result, setResult] = useState(null);
+      const [pastData, setPastData] = useState(MONTHS.map(() => ""));
+      const [season, setSeason] = useState("通年安定");
+
+      const run = async () => {
+        setLoading(true); setResult(null);
+        try {
+          const prompt = `飲食店の売上予測専門家として、以下のデータから今後3ヶ月の月次販売予測を出してください。
+メニュー: ${name} / 傾向: ${season}
+過去データ: ${MONTHS.map((m,i)=>`${m}:${pastData[i]||"なし"}`).join(",")}
+JSON形式のみで回答(説明不要): {"forecast":[月1,月2,月3],"trend":"増加傾向/減少傾向/安定","comment":"30文字以内","dailyAvg":日次平均数値}`;
+          const res = await fetch("https://api.anthropic.com/v1/messages", {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:400, messages:[{role:"user",content:prompt}] })
+          });
+          const data = await res.json();
+          const text = data.content.map(i=>i.text||"").join("");
+          setResult(JSON.parse(text.replace(/```json|```/g,"").trim()));
+        } catch(e) { setResult({error:true}); }
+        setLoading(false);
+      };
+
+      return (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:"#fff",borderRadius:20,padding:28,width:500,maxWidth:"95vw",boxShadow:"0 25px 60px rgba(0,0,0,0.25)",maxHeight:"90vh",overflowY:"auto"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:17,color:"#1e293b"}}>AI売上予測</div>
+                <div style={{fontSize:12,color:"#64748b"}}>{name}</div>
+              </div>
+              <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:"#94a3b8"}}>✕</button>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:12,fontWeight:600,color:"#475569",marginBottom:5}}>販売傾向</div>
+              <select value={season} onChange={e=>setSeason(e.target.value)}
+                style={{width:"100%",padding:"8px 12px",borderRadius:9,border:"1.5px solid #e2e8f0",fontSize:13}}>
+                {["通年安定","季節性あり（夏↑）","季節性あり（冬↑）","成長中","減少傾向"].map(s=><option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:600,color:"#475569",marginBottom:5}}>過去12ヶ月の月次販売数（食）</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
+                {MONTHS.map((m,i)=>(
+                  <div key={m} style={{display:"flex",alignItems:"center",gap:4}}>
+                    <span style={{fontSize:11,color:"#94a3b8",width:26}}>{m}</span>
+                    <input type="number" min="0" value={pastData[i]}
+                      onChange={e=>{const d=[...pastData];d[i]=e.target.value;setPastData(d);}}
+                      placeholder="–"
+                      style={{width:"100%",padding:"5px 7px",borderRadius:7,border:"1.5px solid #e2e8f0",fontSize:12,textAlign:"right"}}/>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <button onClick={run} disabled={loading}
+              style={{width:"100%",padding:11,borderRadius:11,border:"none",
+                background:loading?"#94a3b8":"linear-gradient(135deg,#6366f1,#8b5cf6)",
+                color:"#fff",fontWeight:700,fontSize:14,cursor:loading?"not-allowed":"pointer",marginBottom:14}}>
+              {loading?"AIが予測中…":"AIで予測する"}
+            </button>
+            {result && !result.error && (
+              <div style={{background:"#f8fafc",borderRadius:12,padding:16,border:"1.5px solid #e2e8f0"}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                  {result.forecast.map((v,i)=>(
+                    <div key={i} style={{background:"#fff",borderRadius:9,padding:"9px 12px",textAlign:"center",border:"1.5px solid #e2e8f0"}}>
+                      <div style={{fontSize:10,color:"#94a3b8"}}>{i+1}ヶ月目</div>
+                      <div style={{fontSize:20,fontWeight:800,color:"#6366f1"}}>{v}</div>
+                      <div style={{fontSize:10,color:"#94a3b8"}}>食</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:10}}>
+                  <div style={{background:"#fff",borderRadius:9,padding:"9px 12px",border:"1.5px solid #e2e8f0",flex:1}}>
+                    <div style={{fontSize:10,color:"#94a3b8"}}>日次平均</div>
+                    <div style={{fontSize:17,fontWeight:800,color:"#0ea5e9"}}>{result.dailyAvg}<span style={{fontSize:11}}> 食/日</span></div>
+                  </div>
+                  <div style={{background:"#fff",borderRadius:9,padding:"9px 12px",border:"1.5px solid #e2e8f0",flex:1}}>
+                    <div style={{fontSize:10,color:"#94a3b8"}}>トレンド</div>
+                    <div style={{fontSize:13,fontWeight:700,color:"#1e293b"}}>{result.trend}</div>
+                  </div>
+                </div>
+                <div style={{background:"#eef2ff",borderRadius:9,padding:"9px 12px",fontSize:12,color:"#4338ca",marginBottom:12}}>💡 {result.comment}</div>
+                <button onClick={()=>{onApply(result.dailyAvg);onClose();}}
+                  style={{width:"100%",padding:10,borderRadius:10,border:"none",background:"#1e293b",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+                  この予測を適用する
+                </button>
+              </div>
+            )}
+            {result && result.error && <div style={{background:"#fee2e2",borderRadius:9,padding:12,color:"#991b1b",fontSize:12}}>予測に失敗しました。</div>}
+          </div>
+        </div>
+      );
+    }
+
+    // ===== レシピ編集モーダル =====
+    function RecipeModal({ menu, ingredients, recipe, onSave, onClose }) {
+      const [rows, setRows] = useState(recipe ? recipe.map(r=>({...r})) : []);
+      const addRow = () => setRows(r=>[...r,{ingredientId:ingredients[0]?.id||"",amount:""}]);
+      const removeRow = i => setRows(r=>r.filter((_,idx)=>idx!==i));
+      const updateRow = (i,field,val) => setRows(r=>r.map((row,idx)=>idx===i?{...row,[field]:val}:row));
+
+      return (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:"#fff",borderRadius:20,padding:28,width:480,maxWidth:"95vw",boxShadow:"0 25px 60px rgba(0,0,0,0.25)",maxHeight:"90vh",overflowY:"auto"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:17,color:"#1e293b"}}>レシピ編集</div>
+                <div style={{fontSize:12,color:"#64748b"}}>{menu.name}</div>
+              </div>
+              <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:"#94a3b8"}}>✕</button>
+            </div>
+            {rows.length===0 && <div style={{textAlign:"center",padding:"20px 0",color:"#94a3b8",fontSize:13}}>具材がまだ登録されていません</div>}
+            {rows.map((row,i)=>{
+              const ing = ingredients.find(x=>x.id===Number(row.ingredientId));
+              return (
+                <div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:9}}>
+                  <select value={row.ingredientId} onChange={e=>updateRow(i,"ingredientId",Number(e.target.value))}
+                    style={{flex:2,padding:"8px 10px",borderRadius:9,border:"1.5px solid #e2e8f0",fontSize:13}}>
+                    {ingredients.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
+                  </select>
+                  <input type="number" min="0" step="0.1" value={row.amount}
+                    onChange={e=>updateRow(i,"amount",e.target.value)} placeholder="量"
+                    style={{flex:1,padding:"8px 10px",borderRadius:9,border:"1.5px solid #e2e8f0",fontSize:13,textAlign:"right"}}/>
+                  <span style={{fontSize:12,color:"#64748b",minWidth:22}}>{ing?.unit||""}</span>
+                  <button onClick={()=>removeRow(i)}
+                    style={{background:"#fee2e2",border:"none",borderRadius:8,padding:"6px 10px",cursor:"pointer",color:"#dc2626",fontWeight:700}}>✕</button>
+                </div>
+              );
+            })}
+            <button onClick={addRow}
+              style={{width:"100%",padding:10,borderRadius:10,border:"1.5px dashed #c7d2fe",background:"#eef2ff",
+                color:"#6366f1",fontWeight:700,fontSize:13,cursor:"pointer",margin:"6px 0 18px"}}>
+              ＋ 具材を追加
+            </button>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={onClose}
+                style={{flex:1,padding:11,borderRadius:11,border:"1.5px solid #e2e8f0",background:"#f8fafc",fontWeight:700,cursor:"pointer",fontSize:13}}>
+                キャンセル
+              </button>
+              <button onClick={()=>{onSave(menu.id, rows.filter(r=>r.ingredientId&&r.amount));onClose();}}
+                style={{flex:1,padding:11,borderRadius:11,border:"none",background:"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"#fff",fontWeight:700,cursor:"pointer",fontSize:13}}>
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ===== メニュータブ =====
+    function MenuTab({ menus, setMenus, recipes, setRecipes, ingredients }) {
+      const [showAI, setShowAI] = useState(null);
+      const [showRecipe, setShowRecipe] = useState(null);
+      const [adding, setAdding] = useState(false);
+      const [newName, setNewName] = useState("");
+      const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+      const updateMenu = (id, field, val) => setMenus(m=>m.map(x=>x.id===id?{...x,[field]:val}:x));
+      const deleteMenu = (id) => { setMenus(m=>m.filter(x=>x.id!==id)); setRecipes(r=>{ const n={...r}; delete n[id]; return n; }); setConfirmDeleteId(null); };
+      const addMenu = () => {
+        if (!newName.trim()) return;
+        setMenus(m=>[...m,{id:Date.now(),name:newName.trim(),dailyForecast:0,leadTimeDays:2,orderCycleDays:7}]);
+        setNewName(""); setAdding(false);
+      };
+
+      return (
+        <div>
+          {showAI && <AIForecastModal name={menus.find(m=>m.id===showAI)?.name}
+            onApply={v=>updateMenu(showAI,"dailyForecast",Number(v))} onClose={()=>setShowAI(null)}/>}
+          {showRecipe && <RecipeModal menu={showRecipe} ingredients={ingredients} recipe={recipes[showRecipe.id]}
+            onSave={(menuId,rows)=>setRecipes(r=>({...r,[menuId]:rows}))} onClose={()=>setShowRecipe(null)}/>}
+
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <div style={{fontSize:13,color:"#64748b"}}>各メニューの日次販売予測とレシピを設定</div>
+            <button onClick={()=>setAdding(true)}
+              style={{padding:"7px 16px",borderRadius:10,border:"none",background:"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+              ＋ メニュー追加
+            </button>
+          </div>
+
+          {adding && (
+            <div style={{background:"#fff",borderRadius:13,padding:"14px 18px",marginBottom:10,border:"1.5px solid #c7d2fe",display:"flex",gap:8}}>
+              <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="メニュー名を入力"
+                style={{flex:1,padding:"8px 12px",borderRadius:9,border:"1.5px solid #e2e8f0",fontSize:14}}/>
+              <button onClick={addMenu}
+                style={{padding:"8px 16px",borderRadius:9,border:"none",background:"#6366f1",color:"#fff",fontWeight:700,cursor:"pointer"}}>追加</button>
+              <button onClick={()=>setAdding(false)}
+                style={{padding:"8px 12px",borderRadius:9,border:"1.5px solid #e2e8f0",background:"#f8fafc",cursor:"pointer"}}>✕</button>
+            </div>
+          )}
+
+          {menus.map(menu=>{
+            const recipeItems = recipes[menu.id]||[];
+            return (
+              <div key={menu.id} style={{background:"#fff",borderRadius:16,padding:"18px 22px",marginBottom:10,border:"1.5px solid #f1f5f9",boxShadow:"0 2px 8px rgba(0,0,0,0.04)"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8}}>
+                  <div style={{fontWeight:800,fontSize:15,color:"#1e293b"}}>{menu.name}</div>
+                  <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
+                    <button onClick={()=>setShowRecipe(menu)}
+                      style={{padding:"6px 13px",borderRadius:9,border:"1.5px solid #c7d2fe",background:"#eef2ff",color:"#6366f1",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+                      レシピ{recipeItems.length>0?` (${recipeItems.length}品)`:" 登録"}
+                    </button>
+                    <button onClick={()=>setShowAI(menu.id)}
+                      style={{padding:"6px 13px",borderRadius:9,border:"none",background:"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+                      AI予測
+                    </button>
+                    {confirmDeleteId === menu.id ? (
+                      <div style={{display:"flex",alignItems:"center",gap:6,background:"#fee2e2",borderRadius:9,padding:"5px 10px"}}>
+                        <span style={{fontSize:12,color:"#dc2626",fontWeight:600}}>削除しますか？</span>
+                        <button onClick={()=>deleteMenu(menu.id)}
+                          style={{padding:"3px 10px",borderRadius:7,border:"none",background:"#dc2626",color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer"}}>はい</button>
+                        <button onClick={()=>setConfirmDeleteId(null)}
+                          style={{padding:"3px 10px",borderRadius:7,border:"1.5px solid #fca5a5",background:"#fff",color:"#dc2626",fontWeight:700,fontSize:12,cursor:"pointer"}}>キャンセル</button>
+                      </div>
+                    ) : (
+                      <button onClick={()=>setConfirmDeleteId(menu.id)}
+                        style={{padding:"6px 11px",borderRadius:9,border:"1.5px solid #fecaca",background:"#fff",color:"#dc2626",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+                        削除
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  {[
+                    {label:"日次販売予測（食/日）",field:"dailyForecast",step:"0.5"},
+                    {label:"リードタイム（日）",field:"leadTimeDays",step:"1"},
+                    {label:"発注サイクル（日）",field:"orderCycleDays",step:"1"},
+                  ].map(f=>(
+                    <div key={f.field} style={{flex:"1 1 120px"}}>
+                      <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>{f.label}</div>
+                      <input type="number" min="0" step={f.step} value={menu[f.field]}
+                        onChange={e=>updateMenu(menu.id,f.field,Number(e.target.value))}
+                        style={{width:"100%",padding:"8px 10px",borderRadius:9,border:"1.5px solid #e2e8f0",fontSize:15,fontWeight:700,boxSizing:"border-box"}}/>
+                    </div>
+                  ))}
+                </div>
+                {recipeItems.length>0 && (
+                  <div style={{marginTop:10,padding:"9px 12px",background:"#f8fafc",borderRadius:9,display:"flex",flexWrap:"wrap",gap:6}}>
+                    {recipeItems.map(r=>{
+                      const ing = ingredients.find(x=>x.id===r.ingredientId);
+                      return ing ? <span key={r.ingredientId} style={{background:"#fff",border:"1.5px solid #e2e8f0",borderRadius:7,padding:"3px 10px",fontSize:11,color:"#475569"}}>{ing.name} <b>{r.amount}{ing.unit}</b></span> : null;
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ===== 食材発注タブ =====
+    function IngredientsTab({ ingredients, setIngredients, menus, recipes }) {
+      const [adding, setAdding] = useState(false);
+      const [newIng, setNewIng] = useState({name:"",unit:"g",currentStock:"",leadTimeDays:"2",orderCycleDays:"7"});
+      const [confirmDeleteIngId, setConfirmDeleteIngId] = useState(null);
+
+      const requiredPerDay = useMemo(()=>{
+        const map = {};
+        menus.forEach(menu=>{
+          const daily = Number(menu.dailyForecast)||0;
+          (recipes[menu.id]||[]).forEach(r=>{
+            map[r.ingredientId] = (map[r.ingredientId]||0) + daily * Number(r.amount);
+          });
+        });
+        return map;
+      },[menus,recipes]);
+
+      const updateIng = (id,field,val) => setIngredients(list=>list.map(x=>x.id===id?{...x,[field]:val}:x));
+      const deleteIng = (id) => { setIngredients(list=>list.filter(x=>x.id!==id)); setConfirmDeleteIngId(null); };
+
+      const addIngredient = ()=>{
+        if (!newIng.name.trim()) return;
+        setIngredients(i=>[...i,{id:Date.now(),name:newIng.name.trim(),unit:newIng.unit,
+          currentStock:Number(newIng.currentStock)||0,leadTimeDays:Number(newIng.leadTimeDays)||2,orderCycleDays:Number(newIng.orderCycleDays)||7}]);
+        setNewIng({name:"",unit:"g",currentStock:"",leadTimeDays:"2",orderCycleDays:"7"});
+        setAdding(false);
+      };
+
+      const needOrderCount = ingredients.filter(ing=>{
+        const daily = requiredPerDay[ing.id]||0;
+        return calcOrderQty(daily,ing.leadTimeDays,ing.orderCycleDays,ing.currentStock)>0;
+      }).length;
+
+      return (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <div style={{fontSize:13}}>
+              {needOrderCount>0
+                ? <span style={{color:"#dc2626",fontWeight:700}}>⚠️ {needOrderCount}品目が不足しています</span>
+                : <span style={{color:"#059669",fontWeight:700}}>✓ 全食材の在庫は充分です</span>}
+            </div>
+            <button onClick={()=>setAdding(true)}
+              style={{padding:"7px 16px",borderRadius:10,border:"none",background:"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+              ＋ 食材追加
+            </button>
+          </div>
+
+          {adding && (
+            <div style={{background:"#fff",borderRadius:13,padding:"16px 18px",marginBottom:12,border:"1.5px solid #c7d2fe"}}>
+              <div style={{fontWeight:700,fontSize:13,color:"#1e293b",marginBottom:10}}>新しい食材</div>
+              <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                {[
+                  {label:"食材名",field:"name",type:"text",placeholder:"例: 豚バラ"},
+                  {label:"単位",field:"unit",type:"text",placeholder:"g"},
+                  {label:"現在庫",field:"currentStock",type:"number",placeholder:"0"},
+                  {label:"リードタイム(日)",field:"leadTimeDays",type:"number",placeholder:"2"},
+                  {label:"サイクル(日)",field:"orderCycleDays",type:"number",placeholder:"7"},
+                ].map(f=>(
+                  <div key={f.field}>
+                    <div style={{fontSize:10,color:"#64748b",marginBottom:3}}>{f.label}</div>
+                    <input type={f.type} value={newIng[f.field]} placeholder={f.placeholder}
+                      onChange={e=>setNewIng(n=>({...n,[f.field]:e.target.value}))}
+                      style={{width:"100%",padding:"7px 9px",borderRadius:8,border:"1.5px solid #e2e8f0",fontSize:13}}/>
+                  </div>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={addIngredient}
+                  style={{padding:"8px 20px",borderRadius:9,border:"none",background:"#6366f1",color:"#fff",fontWeight:700,cursor:"pointer"}}>追加</button>
+                <button onClick={()=>setAdding(false)}
+                  style={{padding:"8px 14px",borderRadius:9,border:"1.5px solid #e2e8f0",background:"#f8fafc",cursor:"pointer"}}>キャンセル</button>
+              </div>
+            </div>
+          )}
+
+          {ingredients.map(ing=>{
+            const dailyRequired = requiredPerDay[ing.id]||0;
+            const optimal = dailyRequired>0 ? Math.ceil(dailyRequired*(ing.leadTimeDays+ing.orderCycleDays)) : 0;
+            const orderQty = calcOrderQty(dailyRequired,ing.leadTimeDays,ing.orderCycleDays,ing.currentStock);
+            const usedInMenus = menus.filter(m=>(recipes[m.id]||[]).some(r=>r.ingredientId===ing.id));
+
+            return (
+              <div key={ing.id} style={{background:"#fff",borderRadius:16,padding:"18px 22px",marginBottom:10,border:"1.5px solid #f1f5f9",boxShadow:"0 2px 8px rgba(0,0,0,0.04)"}}>
+                <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+                  <div style={{flex:"1 1 180px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
+                      <div style={{fontWeight:800,fontSize:15,color:"#1e293b"}}>{ing.name}</div>
+                      <StatusBadge orderQty={orderQty} currentStock={ing.currentStock} optimalStock={optimal}/>
+                      {confirmDeleteIngId === ing.id ? (
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:"auto",background:"#fee2e2",borderRadius:8,padding:"3px 8px"}}>
+                          <span style={{fontSize:11,color:"#dc2626",fontWeight:600}}>削除しますか？</span>
+                          <button onClick={()=>deleteIng(ing.id)}
+                            style={{padding:"2px 9px",borderRadius:6,border:"none",background:"#dc2626",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>はい</button>
+                          <button onClick={()=>setConfirmDeleteIngId(null)}
+                            style={{padding:"2px 9px",borderRadius:6,border:"1.5px solid #fca5a5",background:"#fff",color:"#dc2626",fontWeight:700,fontSize:11,cursor:"pointer"}}>キャンセル</button>
+                        </div>
+                      ) : (
+                        <button onClick={()=>setConfirmDeleteIngId(ing.id)}
+                          style={{marginLeft:"auto",padding:"3px 10px",borderRadius:7,border:"1.5px solid #fecaca",background:"#fff",color:"#dc2626",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+                          削除
+                        </button>
+                      )}
+                    </div>
+                    <div style={{fontSize:11,color:"#94a3b8",marginBottom:4}}>
+                      リードタイム <b style={{color:"#64748b"}}>{ing.leadTimeDays}日</b>　発注サイクル <b style={{color:"#64748b"}}>{ing.orderCycleDays}日</b>
+                    </div>
+                    {usedInMenus.length>0 && (
+                      <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                        {usedInMenus.map(m=>(
+                          <span key={m.id} style={{background:"#f1f5f9",borderRadius:6,padding:"2px 8px",fontSize:10,color:"#64748b"}}>{m.name}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{background:orderQty>0?"linear-gradient(135deg,#6366f1,#8b5cf6)":"#f1f5f9",
+                    borderRadius:13,padding:"10px 20px",textAlign:"center",minWidth:90}}>
+                    <div style={{fontSize:10,color:orderQty>0?"rgba(255,255,255,0.7)":"#94a3b8",marginBottom:1}}>発注数</div>
+                    <div style={{fontSize:26,fontWeight:900,color:orderQty>0?"#fff":"#94a3b8",lineHeight:1}}>{orderQty>0?orderQty:"–"}</div>
+                    <div style={{fontSize:10,color:orderQty>0?"rgba(255,255,255,0.7)":"#94a3b8"}}>{ing.unit}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:10,marginTop:14,flexWrap:"wrap"}}>
+                  <div style={{flex:"1 1 110px"}}>
+                    <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>現在庫</div>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <input type="number" min="0" value={ing.currentStock}
+                        onChange={e=>updateIng(ing.id,"currentStock",Number(e.target.value))}
+                        style={{width:"100%",padding:"7px 10px",borderRadius:9,border:"1.5px solid #e2e8f0",fontSize:15,fontWeight:700}}/>
+                      <span style={{fontSize:12,color:"#64748b",whiteSpace:"nowrap"}}>{ing.unit}</span>
+                    </div>
+                  </div>
+                  <div style={{flex:"1 1 110px"}}>
+                    <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>適正在庫</div>
+                    <div style={{padding:"7px 10px",borderRadius:9,background:"#f8fafc",border:"1.5px solid #e2e8f0",fontSize:15,fontWeight:700,color:dailyRequired>0?"#0ea5e9":"#94a3b8"}}>
+                      {dailyRequired>0?`${optimal} ${ing.unit}`:"–"}
+                    </div>
+                  </div>
+                  <div style={{flex:"2 1 160px"}}>
+                    <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>日次必要量（全メニュー合算）</div>
+                    <div style={{padding:"7px 10px",borderRadius:9,background:"#f8fafc",border:"1.5px solid #e2e8f0",fontSize:15,fontWeight:700,color:dailyRequired>0?"#059669":"#94a3b8"}}>
+                      {dailyRequired>0?`${Math.round(dailyRequired*10)/10} ${ing.unit}/日`:"レシピ未設定"}
+                    </div>
+                  </div>
+                </div>
+                {dailyRequired>0 && (
+                  <div style={{marginTop:10,padding:"8px 12px",background:"#f8fafc",borderRadius:9,fontSize:11,color:"#64748b"}}>
+                    計算式: ({ing.leadTimeDays}日 + {ing.orderCycleDays}日) × {Math.round(dailyRequired*10)/10}{ing.unit}/日 − {ing.currentStock}{ing.unit} = <b style={{color:"#6366f1"}}>{orderQty}{ing.unit}</b>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ===== メインアプリ =====
+    function App() {
+      const [tab, setTab] = useState("menu");
+      const [menus, setMenus] = useState(INITIAL_MENUS);
+      const [ingredients, setIngredients] = useState(INITIAL_INGREDIENTS);
+      const [recipes, setRecipes] = useState(INITIAL_RECIPES);
+
+      const requiredPerDay = useMemo(()=>{
+        const map = {};
+        menus.forEach(menu=>{
+          const daily = Number(menu.dailyForecast)||0;
+          (recipes[menu.id]||[]).forEach(r=>{
+            map[r.ingredientId] = (map[r.ingredientId]||0) + daily * Number(r.amount);
+          });
+        });
+        return map;
+      },[menus,recipes]);
+
+      const needOrderCount = ingredients.filter(ing=>{
+        const daily = requiredPerDay[ing.id]||0;
+        return calcOrderQty(daily,ing.leadTimeDays,ing.orderCycleDays,ing.currentStock)>0;
+      }).length;
+
+      const totalForecast = menus.reduce((s,m)=>s+(Number(m.dailyForecast)||0),0);
+
+      return (
+        <div style={{minHeight:"100vh",background:"#f8fafc"}}>
+          <div style={{background:"#fff",borderBottom:"1.5px solid #f1f5f9",padding:"13px 22px",position:"sticky",top:0,zIndex:100,
+            display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div>
+              <div style={{fontWeight:900,fontSize:18,color:"#1e293b",letterSpacing:-0.5}}>発注管理</div>
+              <div style={{fontSize:11,color:"#94a3b8"}}>メニュー予測 × レシピ → 食材自動発注</div>
+            </div>
+            {needOrderCount>0 && (
+              <div style={{background:"#fee2e2",color:"#dc2626",borderRadius:9,padding:"5px 12px",fontWeight:700,fontSize:12}}>
+                ⚠️ {needOrderCount}品目 要発注
+              </div>
+            )}
+          </div>
+
+          <div style={{padding:"14px 22px 40px"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
+              {[
+                {label:"メニュー数",val:menus.length,unit:"品目",color:"#0ea5e9"},
+                {label:"総日次販売予測",val:totalForecast,unit:"食/日",color:"#8b5cf6"},
+                {label:"要発注食材",val:needOrderCount,unit:"品目",color:needOrderCount>0?"#dc2626":"#059669"},
+              ].map(({label,val,unit,color})=>(
+                <div key={label} style={{background:"#fff",borderRadius:13,padding:"13px 17px",border:"1.5px solid #f1f5f9"}}>
+                  <div style={{fontSize:11,color:"#94a3b8",marginBottom:2}}>{label}</div>
+                  <div style={{fontSize:22,fontWeight:900,color}}>{val} <span style={{fontSize:11,fontWeight:400,color:"#94a3b8"}}>{unit}</span></div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{display:"flex",marginBottom:14,background:"#f1f5f9",borderRadius:12,padding:4}}>
+              {[{key:"menu",label:"メニュー管理"},{key:"ingredients",label:"食材発注"}].map(t=>(
+                <button key={t.key} onClick={()=>setTab(t.key)}
+                  style={{flex:1,padding:"9px 0",borderRadius:9,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,
+                    background:tab===t.key?"#fff":"transparent",
+                    color:tab===t.key?"#6366f1":"#64748b",
+                    boxShadow:tab===t.key?"0 1px 4px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"}}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {tab==="menu"
+              ? <MenuTab menus={menus} setMenus={setMenus} recipes={recipes} setRecipes={setRecipes} ingredients={ingredients}/>
+              : <IngredientsTab ingredients={ingredients} setIngredients={setIngredients} menus={menus} recipes={recipes}/>}
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
