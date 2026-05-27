@@ -22,7 +22,8 @@
     // ===== Supabase設定 =====
     const SUPABASE_URL = "https://wxdqlsliccugxxhkpckd.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4ZHFsc2xpY2N1Z3h4aGtwY2tkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NjU0MTAsImV4cCI6MjA5NTQ0MTQxMH0.FTEXuFBL_xjXy8oqbI8fWiQ3NSabwBigRAocSvjPbUA";
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabase = window.supabase.createClient(https://wxdqlsliccugxxhkpckd.supabase.co, eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4ZHFsc2xpY2N1Z3h4aGtwY2tkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NjU0MTAsImV4cCI6MjA5NTQ0MTQxMH0.FTEXuFBL_xjXy8oqbI8fWiQ3NSabwBigRAocSvjPbUA
+);
 
     const MONTHS = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
 
